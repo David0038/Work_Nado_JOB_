@@ -3,18 +3,16 @@ import asyncio
 import datetime
 import requests
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton, Message
-)
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from fastapi import FastAPI, Request
 import uvicorn
 
-API_TOKEN = os.getenv("API_TOKEN","8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID","test_1179735")
-YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET","test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk")
+# === Токены и ключи ===
+API_TOKEN = "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag"
+YOOKASSA_SHOP_ID = "test_1179735"  # Тестовый Shop ID
+YOOKASSA_SECRET = "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk"  # Тестовый Secret
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -36,6 +34,7 @@ main_menu = ReplyKeyboardMarkup(
 def has_active_subscription(user_id: int) -> bool:
     return subscriptions.get(user_id, datetime.datetime.min) > datetime.datetime.now()
 
+# === Команды бота ===
 @dp.message(Command("start"))
 async def start(message: Message):
     kb = ReplyKeyboardMarkup(
@@ -109,6 +108,7 @@ async def buy_subscription(message: Message):
         "metadata": {"user_id": message.from_user.id}
     }
 
+    # Создаём платеж через ЮKassa
     response = requests.post(
         "https://api.yookassa.ru/v3/payments",
         auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
@@ -131,6 +131,7 @@ async def buy_subscription(message: Message):
         reply_markup=kb
     )
 
+# === Callback от ЮKassa ===
 @app.post("/yookassa/callback")
 async def yookassa_callback(request: Request):
     data = await request.json()
@@ -144,6 +145,7 @@ async def yookassa_callback(request: Request):
 async def root():
     return {"status": "WorkNadoJobBot работает 🚀"}
 
+# === Запуск бота и FastAPI ===
 async def main():
     loop = asyncio.get_event_loop()
     loop.create_task(dp.start_polling(bot))
