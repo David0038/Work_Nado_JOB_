@@ -12,9 +12,9 @@ from aiogram.filters import Command
 from fastapi import FastAPI, Request
 import uvicorn
 
-API_TOKEN = os.getenv("API_TOKEN", "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "test_1179735")
-YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk")
+API_TOKEN = os.getenv("API_TOKEN","8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
+YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID","test_1179735")
+YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET","test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk")
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
