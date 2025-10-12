@@ -15,7 +15,7 @@ import uvicorn
 # ✅ Настройки из переменных окружения (Render использует ENV)
 API_TOKEN = os.getenv("API_TOKEN", "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "1177759")
-YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "test_1179735")
+YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "live_CHbCwtxJJFbbt1V1jc14k_Pwgp_f-X6AqkO5_skAEbc")
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
