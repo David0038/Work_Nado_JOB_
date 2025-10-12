@@ -1,8 +1,12 @@
 import os
+import asyncio
 import datetime
 import requests
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, Update
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, Message
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from fastapi import FastAPI, Request
@@ -11,8 +15,6 @@ import uvicorn
 API_TOKEN = os.getenv("API_TOKEN", "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "test_1179735")
 YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk")
-WEBHOOK_PATH = f"/webhook/{API_TOKEN}"
-WEBHOOK_URL = f"https://work-nado-job.onrender.com{WEBHOOK_PATH}"
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
@@ -129,12 +131,6 @@ async def buy_subscription(message: Message):
         reply_markup=kb
     )
 
-@app.post(WEBHOOK_PATH)
-async def telegram_webhook(update: dict):
-    update_obj = Update(**update)
-    await dp.process_update(update_obj)
-    return {"ok": True}
-
 @app.post("/yookassa/callback")
 async def yookassa_callback(request: Request):
     data = await request.json()
@@ -148,9 +144,12 @@ async def yookassa_callback(request: Request):
 async def root():
     return {"status": "WorkNadoJobBot работает 🚀"}
 
-async def on_startup():
-    await bot.delete_webhook()
-    await bot.set_webhook(WEBHOOK_URL)
+async def main():
+    loop = asyncio.get_event_loop()
+    loop.create_task(dp.start_polling(bot))
+    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
+    server = uvicorn.Server(config)
+    await server.serve()
 
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=int(os.getenv("PORT", 8000)), reload=False)
+    asyncio.run(main())
