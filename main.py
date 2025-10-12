@@ -12,7 +12,6 @@ from aiogram.filters import Command
 from fastapi import FastAPI, Request
 import uvicorn
 
-# ✅ Настройки из переменных окружения (Render использует ENV)
 API_TOKEN = os.getenv("API_TOKEN", "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
 YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "test_1179735")
 YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk")
@@ -68,8 +67,7 @@ async def choose_customer(message: Message):
 async def choose_worker(message: Message):
     roles[message.from_user.id] = "worker"
     await message.answer(
-        "Вы выбрали роль: 👤 Исполнитель.\n"
-        "Вы можете бесплатно просматривать вакансии.",
+        "Вы выбрали роль: 👤 Исполнитель.\nВы можете бесплатно просматривать вакансии.",
         reply_markup=main_menu
     )
 
@@ -103,18 +101,11 @@ async def buy_subscription(message: Message):
         return
 
     amount = "1000.00"
-    headers = {
-        "Content-Type": "application/json",
-        "Idempotence-Key": str(message.from_user.id) + str(datetime.datetime.now().timestamp())
-    }
     data = {
         "amount": {"value": amount, "currency": "RUB"},
         "capture": True,
         "description": "Подписка на WorkNadoJobBot (30 дней)",
-        "confirmation": {
-            "type": "redirect",
-            "return_url": "https://t.me/WorkNadoJobBot"
-        },
+        "confirmation": {"type": "redirect", "return_url": "https://t.me/WorkNadoJobBot"},
         "metadata": {"user_id": message.from_user.id}
     }
 
@@ -122,22 +113,23 @@ async def buy_subscription(message: Message):
         "https://api.yookassa.ru/v3/payments",
         auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
         json=data,
-        headers=headers
+        headers={"Content-Type": "application/json"}
     )
 
     payment = response.json()
     if "confirmation" not in payment:
-        await message.answer("⚠️ Ошибка при создании платежа. Проверьте данные и попробуйте позже.")
+        await message.answer(f"⚠️ Ошибка при создании платежа.\n\nОтвет сервера:\n{payment}")
         return
 
     confirmation_url = payment["confirmation"]["confirmation_url"]
     kb = InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]
-        ]
+        inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]]
     )
 
-    await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.\n\nПосле оплаты доступ откроется автоматически ✅", reply_markup=kb)
+    await message.answer(
+        f"💰 Подписка на 30 дней — {amount} ₽.\n\nПосле оплаты доступ откроется автоматически ✅",
+        reply_markup=kb
+    )
 
 @app.post("/yookassa/callback")
 async def yookassa_callback(request: Request):
