@@ -2,7 +2,7 @@ import os
 import asyncio
 import datetime
 import requests
-import uuid  # ✅ добавлено для генерации уникального Idempotence-Key
+import uuid
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -25,12 +25,27 @@ app = FastAPI()
 roles = {}
 subscriptions = {}
 
-main_menu = ReplyKeyboardMarkup(
+# Главное меню для заказчика
+main_menu_customer = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Вакансии")],
         [KeyboardButton(text="📝 Создать заказ")],
         [KeyboardButton(text="💳 Купить подписку")]
     ],
+    resize_keyboard=True
+)
+
+# Главное меню для исполнителя
+main_menu_worker = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="📋 Вакансии")],
+    ],
+    resize_keyboard=True
+)
+
+# Кнопка "назад" для подменю
+back_button = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="⬅️ Назад")]],
     resize_keyboard=True
 )
 
@@ -61,7 +76,7 @@ async def choose_customer(message: Message):
     await message.answer(
         "Вы выбрали роль: 👔 Заказчик.\n\n"
         "Чтобы создавать заказы и просматривать отклики, оформите подписку — 1000 ₽ / 30 дней.",
-        reply_markup=main_menu
+        reply_markup=main_menu_customer
     )
 
 @dp.message(F.text == "👤 Я исполнитель")
@@ -69,36 +84,40 @@ async def choose_worker(message: Message):
     roles[message.from_user.id] = "worker"
     await message.answer(
         "Вы выбрали роль: 👤 Исполнитель.\nВы можете бесплатно просматривать вакансии.",
-        reply_markup=main_menu
+        reply_markup=main_menu_worker
     )
 
 @dp.message(F.text == "📋 Вакансии")
 async def show_vacancies(message: Message):
     role = roles.get(message.from_user.id)
     if role == "customer" and not has_active_subscription(message.from_user.id):
-        await message.answer("❌ Для заказчиков доступ только по подписке. Купите подписку за 1000 ₽.", reply_markup=main_menu)
+        await message.answer(
+            "❌ Для заказчиков доступ только по подписке. Купите подписку за 1000 ₽.",
+            reply_markup=main_menu_customer
+        )
         return
     await message.answer(
         "✅ Список вакансий:\n"
         "1️⃣ Разработка Telegram-бота — 10 000 ₽\n"
         "2️⃣ Дизайн логотипа — 5 000 ₽\n"
-        "3️⃣ Копирайтинг — 3 000 ₽"
+        "3️⃣ Копирайтинг — 3 000 ₽",
+        reply_markup=back_button
     )
 
 @dp.message(F.text == "📝 Создать заказ")
 async def create_order(message: Message):
     if roles.get(message.from_user.id) != "customer":
-        await message.answer("❌ Только заказчики могут создавать заказы.")
+        await message.answer("❌ Только заказчики могут создавать заказы.", reply_markup=main_menu_customer)
         return
     if not has_active_subscription(message.from_user.id):
-        await message.answer("❌ Для создания заказов нужна подписка (1000 ₽).", reply_markup=main_menu)
+        await message.answer("❌ Для создания заказов нужна подписка (1000 ₽).", reply_markup=main_menu_customer)
         return
-    await message.answer("✏️ Напишите описание вашего заказа.\n\n(Этот раздел в разработке.)")
+    await message.answer("✏️ Напишите описание вашего заказа.\n\n(Этот раздел в разработке.)", reply_markup=back_button)
 
 @dp.message(F.text == "💳 Купить подписку")
 async def buy_subscription(message: Message):
     if roles.get(message.from_user.id) != "customer":
-        await message.answer("❌ Подписка нужна только заказчикам.")
+        await message.answer("❌ Подписка нужна только заказчикам.", reply_markup=main_menu_customer)
         return
 
     amount = "1000.00"
@@ -110,7 +129,6 @@ async def buy_subscription(message: Message):
         "metadata": {"user_id": message.from_user.id}
     }
 
-    # ✅ Добавлено: генерация уникального Idempotence-Key
     idempotence_key = str(uuid.uuid4())
 
     response = requests.post(
@@ -125,7 +143,8 @@ async def buy_subscription(message: Message):
 
     payment = response.json()
     if "confirmation" not in payment:
-        await message.answer(f"⚠️ Ошибка при создании платежа.\n\nОтвет сервера:\n{payment}")
+        await message.answer(f"⚠️ Ошибка при создании платежа.\n\nОтвет сервера:\n{payment}",
+                             reply_markup=main_menu_customer)
         return
 
     confirmation_url = payment["confirmation"]["confirmation_url"]
@@ -138,13 +157,29 @@ async def buy_subscription(message: Message):
         reply_markup=kb
     )
 
+@dp.message(F.text == "⬅️ Назад")
+async def go_back(message: Message):
+    role = roles.get(message.from_user.id)
+    if role == "customer":
+        await message.answer("Вы вернулись в главное меню.", reply_markup=main_menu_customer)
+    elif role == "worker":
+        await message.answer("Вы вернулись в главное меню.", reply_markup=main_menu_worker)
+    else:
+        await start(message)
+
 @app.post("/yookassa/callback")
 async def yookassa_callback(request: Request):
     data = await request.json()
     if data.get("event") == "payment.succeeded":
         user_id = int(data["object"]["metadata"]["user_id"])
         subscriptions[user_id] = datetime.datetime.now() + datetime.timedelta(days=30)
-        await bot.send_message(user_id, "✅ Оплата получена! Подписка активна на 30 дней 🎉")
+
+        await bot.send_message(
+            user_id,
+            "✅ Оплата получена! Подписка активна на 30 дней 🎉\n"
+            "Теперь вы можете создавать заказы и просматривать вакансии.",
+            reply_markup=main_menu_customer
+        )
     return {"status": "ok"}
 
 @app.get("/")
