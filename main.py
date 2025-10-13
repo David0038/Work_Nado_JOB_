@@ -2,6 +2,7 @@ import os
 import asyncio
 import datetime
 import requests
+import uuid  # ✅ добавлено для генерации уникального Idempotence-Key
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -109,11 +110,17 @@ async def buy_subscription(message: Message):
         "metadata": {"user_id": message.from_user.id}
     }
 
+    # ✅ Добавлено: генерация уникального Idempotence-Key
+    idempotence_key = str(uuid.uuid4())
+
     response = requests.post(
         "https://api.yookassa.ru/v3/payments",
         auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
         json=data,
-        headers={"Content-Type": "application/json"}
+        headers={
+            "Content-Type": "application/json",
+            "Idempotence-Key": idempotence_key
+        }
     )
 
     payment = response.json()
