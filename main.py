@@ -4,7 +4,10 @@ import datetime
 import requests
 import uuid
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message
+from aiogram.types import (
+    ReplyKeyboardMarkup, KeyboardButton,
+    InlineKeyboardMarkup, InlineKeyboardButton, Message
+)
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.filters import Command
 from fastapi import FastAPI, Request
@@ -24,6 +27,7 @@ subscriptions = {}
 orders = {}
 order_steps = {}
 
+# Главное меню для заказчика
 main_menu_customer = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Вакансии")],
@@ -33,19 +37,23 @@ main_menu_customer = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# Главное меню для исполнителя
 main_menu_worker = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="📋 Вакансии")]],
     resize_keyboard=True
 )
 
+# Кнопка "назад"
 back_button = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="⬅️ Назад")]],
     resize_keyboard=True
 )
 
+# Проверка активной подписки
 def has_active_subscription(user_id: int) -> bool:
     return subscriptions.get(user_id, datetime.datetime.min) > datetime.datetime.now()
 
+# Старт
 @dp.message(Command("start"))
 async def start(message: Message):
     kb = ReplyKeyboardMarkup(
@@ -60,16 +68,25 @@ async def start(message: Message):
         reply_markup=kb
     )
 
+# Выбор роли заказчика
 @dp.message(F.text == "👔 Я заказчик")
 async def choose_customer(message: Message):
     roles[message.from_user.id] = "customer"
-    await message.answer("Вы выбрали роль заказчика.", reply_markup=main_menu_customer)
+    await message.answer(
+        "Вы выбрали роль: 👔 Заказчик.\nЧтобы создавать заказы и просматривать вакансии, оформите подписку.",
+        reply_markup=main_menu_customer
+    )
 
+# Выбор роли исполнителя
 @dp.message(F.text == "👤 Я исполнитель")
 async def choose_worker(message: Message):
     roles[message.from_user.id] = "worker"
-    await message.answer("Вы выбрали роль исполнителя.", reply_markup=main_menu_worker)
+    await message.answer(
+        "Вы выбрали роль: 👤 Исполнитель.\nВы можете бесплатно просматривать вакансии.",
+        reply_markup=main_menu_worker
+    )
 
+# Просмотр вакансий
 @dp.message(F.text == "📋 Вакансии")
 async def show_vacancies(message: Message):
     role = roles.get(message.from_user.id)
@@ -84,6 +101,7 @@ async def show_vacancies(message: Message):
         kb.add(InlineKeyboardButton(text=f"{order['title']} — {order['price']} ₽", callback_data=f"order_{order_id}"))
     await message.answer("✅ Список вакансий:", reply_markup=kb)
 
+# Детали заказа
 @dp.callback_query(F.data.startswith("order_"))
 async def order_detail(callback):
     order_id = callback.data.split("_")[1]
@@ -98,6 +116,7 @@ async def order_detail(callback):
     kb = InlineKeyboardMarkup().add(InlineKeyboardButton(text="✅ Откликнуться", callback_data=f"apply_{order_id}"))
     await callback.message.edit_text(text, reply_markup=kb, parse_mode="Markdown")
 
+# Отклик исполнителя
 @dp.callback_query(F.data.startswith("apply_"))
 async def apply_order(callback):
     order_id = callback.data.split("_")[1]
@@ -107,6 +126,7 @@ async def apply_order(callback):
         await bot.send_message(customer_id, f"👤 Исполнитель @{callback.from_user.username} откликнулся на ваш заказ '{order['title']}'!")
         await callback.answer("Отклик отправлен!")
 
+# Создание заказа
 @dp.message(F.text == "📝 Создать заказ")
 async def create_order(message: Message):
     if roles.get(message.from_user.id) != "customer":
@@ -118,6 +138,7 @@ async def create_order(message: Message):
     order_steps[message.from_user.id] = {"step": "title"}
     await message.answer("Введите краткое название заказа:", reply_markup=back_button)
 
+# Обработка шагов создания заказа
 @dp.message()
 async def process_order_steps(message: Message):
     step_data = order_steps.get(message.from_user.id)
@@ -149,6 +170,7 @@ async def process_order_steps(message: Message):
         del order_steps[message.from_user.id]
         await message.answer("✅ Заказ опубликован!", reply_markup=main_menu_customer)
 
+# Покупка подписки
 @dp.message(F.text == "💳 Купить подписку")
 async def buy_subscription(message: Message):
     if roles.get(message.from_user.id) != "customer":
@@ -164,61 +186,42 @@ async def buy_subscription(message: Message):
         "payment_method_data": {"type": "bank_card"},
         "metadata": {"user_id": message.from_user.id}
     }
-
     idempotence_key = str(uuid.uuid4())
-    try:
-        response = requests.post(
-            "https://api.yookassa.ru/v3/payments",
-            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
-            json=data,
-            headers={"Content-Type": "application/json", "Idempotence-Key": idempotence_key},
-            timeout=10
-        )
-        payment = response.json()
-        print(payment)  # Для отладки
+    response = requests.post(
+        "https://api.yookassa.ru/v3/payments",
+        auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
+        json=data,
+        headers={"Content-Type": "application/json", "Idempotence-Key": idempotence_key}
+    )
+    payment = response.json()
+    print(payment)  # Лог ответа
 
-        if "confirmation" not in payment:
-            await message.answer(f"⚠️ Ошибка при создании платежа:\n{payment}", reply_markup=main_menu_customer)
-            return
+    if "confirmation" not in payment:
+        await message.answer(f"⚠️ Ошибка при создании платежа.\n\nОтвет сервера:\n{payment}", reply_markup=main_menu_customer)
+        return
 
-        confirmation_url = payment["confirmation"]["confirmation_url"]
-        kb = InlineKeyboardMarkup(inline_keyboard=[
-            [InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]
-        ])
-        await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.\nПосле оплаты доступ откроется автоматически ✅", reply_markup=kb)
+    confirmation_url = payment["confirmation"]["confirmation_url"]
+    kb = InlineKeyboardMarkup(
+        inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]]
+    )
+    await message.answer(
+        f"💰 Подписка на 30 дней — {amount} ₽. После оплаты доступ откроется автоматически ✅",
+        reply_markup=kb
+    )
 
-    except Exception as e:
-        await message.answer(f"❌ Произошла ошибка при создании платежа:\n{e}", reply_markup=main_menu_customer)
-
+# Кнопка назад
 @dp.message(F.text == "⬅️ Назад")
 async def go_back(message: Message):
     role = roles.get(message.from_user.id)
     if role == "customer":
-        await message.answer("Вы вернулись в меню.", reply_markup=main_menu_customer)
+        await message.answer("Вы вернулись в главное меню.", reply_markup=main_menu_customer)
     elif role == "worker":
-        await message.answer("Вы вернулись в меню.", reply_markup=main_menu_worker)
+        await message.answer("Вы вернулись в главное меню.", reply_markup=main_menu_worker)
     else:
         await start(message)
 
+# Callback от ЮKassa
 @app.post("/yookassa/callback")
 async def yookassa_callback(request: Request):
     data = await request.json()
-    if data.get("event") == "payment.succeeded":
-        user_id = int(data["object"]["metadata"]["user_id"])
-        subscriptions[user_id] = datetime.datetime.now() + datetime.timedelta(days=30)
-        await bot.send_message(user_id, "✅ Оплата получена! Подписка активна.", reply_markup=main_menu_customer)
-    return {"status": "ok"}
-
-@app.get("/")
-async def root():
-    return {"status": "WorkNadoJobBot работает 🚀"}
-
-async def main():
-    loop = asyncio.get_event_loop()
-    loop.create_task(dp.start_polling(bot))
-    config = uvicorn.Config(app, host="0.0.0.0", port=int(os.getenv("PORT", 8000)))
-    server = uvicorn.Server(config)
-    await server.serve()
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    if data.get("event") == "payment
