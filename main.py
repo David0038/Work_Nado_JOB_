@@ -23,6 +23,7 @@ roles = {}
 subscriptions = {}
 orders = {}
 order_steps = {}
+pending_payments = {}
 
 main_menu_customer = ReplyKeyboardMarkup(
     keyboard=[
@@ -63,27 +64,18 @@ async def start(message: Message):
 @dp.message(F.text == "👔 Я заказчик")
 async def choose_customer(message: Message):
     roles[message.from_user.id] = "customer"
-    await message.answer(
-        "Вы выбрали роль заказчика.",
-        reply_markup=main_menu_customer
-    )
+    await message.answer("Вы выбрали роль заказчика.", reply_markup=main_menu_customer)
 
 @dp.message(F.text == "👤 Я исполнитель")
 async def choose_worker(message: Message):
     roles[message.from_user.id] = "worker"
-    await message.answer(
-        "Вы выбрали роль исполнителя.",
-        reply_markup=main_menu_worker
-    )
+    await message.answer("Вы выбрали роль исполнителя.", reply_markup=main_menu_worker)
 
 @dp.message(F.text == "📋 Вакансии")
 async def show_vacancies(message: Message):
     role = roles.get(message.from_user.id)
     if role == "customer" and not has_active_subscription(message.from_user.id):
-        await message.answer(
-            "❌ Для заказчиков доступ только по подписке. Купите подписку за 1000 ₽.",
-            reply_markup=main_menu_customer
-        )
+        await message.answer("❌ Для заказчиков доступ только по подписке. Купите подписку за 1000 ₽.", reply_markup=main_menu_customer)
         return
     if not orders:
         await message.answer("Пока нет активных заказов.", reply_markup=back_button)
@@ -164,29 +156,43 @@ async def buy_subscription(message: Message):
         await message.answer("❌ Подписка нужна только заказчикам.", reply_markup=main_menu_customer)
         return
     amount = "1000.00"
-    data = {
+    payment_data = {
         "amount": {"value": amount, "currency": "RUB"},
         "capture": True,
         "description": "Подписка на WorkNadoJobBot (30 дней)",
         "confirmation": {"type": "redirect", "return_url": "https://t.me/WorkNadoJobBot"},
-        "metadata": {"user_id": message.from_user.id}
+        "payment_method_data": {"type": "bank_card"},
+        "metadata": {"user_id": str(message.from_user.id)}
     }
-    idempotence_key = str(uuid.uuid4())
-    response = requests.post(
-        "https://api.yookassa.ru/v3/payments",
-        auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
-        json=data,
-        headers={"Content-Type": "application/json", "Idempotence-Key": idempotence_key}
-    )
-    payment = response.json()
-    if "confirmation" not in payment:
-        await message.answer(f"⚠️ Ошибка при создании платежа: {payment}", reply_markup=main_menu_customer)
+    headers = {
+        "Content-Type": "application/json",
+        "Idempotence-Key": str(uuid.uuid4())
+    }
+    try:
+        response = requests.post(
+            "https://api.yookassa.ru/v3/payments",
+            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
+            headers=headers,
+            json=payment_data,
+            timeout=15
+        )
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка при создании платежа: {e}", reply_markup=main_menu_customer)
         return
-    confirmation_url = payment["confirmation"]["confirmation_url"]
-    kb = InlineKeyboardMarkup(
-        inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]]
-    )
-    await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.\nПосле оплаты доступ откроется автоматически.", reply_markup=kb)
+    try:
+        payment = response.json()
+    except Exception:
+        await message.answer("⚠️ Не удалось распарсить ответ платежного сервера.", reply_markup=main_menu_customer)
+        return
+    if response.status_code == 200 and "confirmation" in payment:
+        confirmation_url = payment["confirmation"]["confirmation_url"]
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]])
+        sent = await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.\nПосле оплаты доступ откроется автоматически.", reply_markup=kb)
+        payment_id = payment.get("id")
+        if payment_id:
+            pending_payments[payment_id] = (sent.chat.id, sent.message_id, message.from_user.id)
+    else:
+        await message.answer(f"⚠️ Ошибка при создании платежа: {payment}", reply_markup=main_menu_customer)
 
 @dp.message(F.text == "⬅️ Назад")
 async def go_back(message: Message):
@@ -202,9 +208,20 @@ async def go_back(message: Message):
 async def yookassa_callback(request: Request):
     data = await request.json()
     if data.get("event") == "payment.succeeded":
-        user_id = int(data["object"]["metadata"]["user_id"])
-        subscriptions[user_id] = datetime.datetime.now() + datetime.timedelta(days=30)
-        await bot.send_message(user_id, "✅ Оплата прошла успешно! Теперь вы можете создавать заказы.", reply_markup=main_menu_customer)
+        obj = data.get("object", {})
+        metadata = obj.get("metadata", {})
+        user_id = int(metadata.get("user_id")) if metadata.get("user_id") else None
+        payment_id = obj.get("id")
+        if user_id:
+            subscriptions[user_id] = datetime.datetime.now() + datetime.timedelta(days=30)
+            await bot.send_message(user_id, "✅ Оплата прошла успешно! Теперь вы можете создавать заказы.", reply_markup=main_menu_customer)
+        pending = pending_payments.pop(payment_id, None)
+        if pending:
+            chat_id, message_id, uid = pending
+            try:
+                await bot.edit_message_reply_markup(chat_id=chat_id, message_id=message_id, reply_markup=None)
+            except Exception:
+                pass
     return {"status": "ok"}
 
 @app.get("/")
@@ -220,4 +237,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
