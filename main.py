@@ -154,28 +154,41 @@ async def buy_subscription(message: Message):
     if roles.get(message.from_user.id) != "customer":
         await message.answer("❌ Подписка нужна только заказчикам.", reply_markup=main_menu_customer)
         return
+
     amount = "1000.00"
     data = {
         "amount": {"value": amount, "currency": "RUB"},
         "capture": True,
         "description": "Подписка на WorkNadoJobBot (30 дней)",
         "confirmation": {"type": "redirect", "return_url": "https://t.me/WorkNadoJobBot"},
+        "payment_method_data": {"type": "bank_card"},
         "metadata": {"user_id": message.from_user.id}
     }
+
     idempotence_key = str(uuid.uuid4())
-    response = requests.post(
-        "https://api.yookassa.ru/v3/payments",
-        auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
-        json=data,
-        headers={"Content-Type": "application/json", "Idempotence-Key": idempotence_key}
-    )
-    payment = response.json()
-    if "confirmation" not in payment:
-        await message.answer(f"⚠️ Ошибка при создании платежа: {payment}", reply_markup=main_menu_customer)
-        return
-    confirmation_url = payment["confirmation"]["confirmation_url"]
-    kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]])
-    await message.answer(f"💰 Подписка на 30 дней — {amount} ₽. После оплаты доступ откроется автоматически.", reply_markup=kb)
+    try:
+        response = requests.post(
+            "https://api.yookassa.ru/v3/payments",
+            auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET),
+            json=data,
+            headers={"Content-Type": "application/json", "Idempotence-Key": idempotence_key},
+            timeout=10
+        )
+        payment = response.json()
+        print(payment)  # Для отладки
+
+        if "confirmation" not in payment:
+            await message.answer(f"⚠️ Ошибка при создании платежа:\n{payment}", reply_markup=main_menu_customer)
+            return
+
+        confirmation_url = payment["confirmation"]["confirmation_url"]
+        kb = InlineKeyboardMarkup(inline_keyboard=[
+            [InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]
+        ])
+        await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.\nПосле оплаты доступ откроется автоматически ✅", reply_markup=kb)
+
+    except Exception as e:
+        await message.answer(f"❌ Произошла ошибка при создании платежа:\n{e}", reply_markup=main_menu_customer)
 
 @dp.message(F.text == "⬅️ Назад")
 async def go_back(message: Message):
