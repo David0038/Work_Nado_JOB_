@@ -168,7 +168,19 @@ async def buy_subscription(message: Message):
         return
     confirmation_url = payment["confirmation"]["confirmation_url"]
     kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="💳 Оплатить через ЮKassa", url=confirmation_url)]])
-    await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.", reply_markup=kb)
+    msg = await message.answer(f"💰 Подписка на 30 дней — {amount} ₽.\nПосле оплаты нажмите кнопку ниже.", reply_markup=kb)
+    payment_id = payment.get("id")
+    if payment_id:
+        for _ in range(10):
+            await asyncio.sleep(10)
+            check = requests.get(f"https://api.yookassa.ru/v3/payments/{payment_id}", auth=(YOOKASSA_SHOP_ID, YOOKASSA_SECRET))
+            js = check.json()
+            if js.get("status") == "succeeded":
+                expires = datetime.datetime.now() + datetime.timedelta(days=30)
+                set_subscription_db(message.from_user.id, expires)
+                await msg.edit_text("✅ Оплата получена! Подписка активна на 30 дней 🎉", reply_markup=None)
+                await message.answer("Теперь вы можете создавать заказы и просматривать вакансии.", reply_markup=main_menu_customer)
+                break
 
 @dp.message(F.text == "⬅️ Назад")
 async def go_back(message: Message):
@@ -203,4 +215,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
