@@ -3,7 +3,8 @@ import asyncio
 import datetime
 import requests
 import uuid
-import sqlite3
+import psycopg2
+from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Message, CallbackQuery
 from aiogram.fsm.storage.memory import MemoryStorage
@@ -13,20 +14,40 @@ from aiogram.fsm.state import StatesGroup, State
 from fastapi import FastAPI, Request
 import uvicorn
 
-API_TOKEN = os.getenv("API_TOKEN", "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag")
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID", "1179735")
-YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET", "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk")
+# ---- Твои реальные токены и ключи ----
+API_TOKEN = "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag"
+YOOKASSA_SHOP_ID = "1179735"
+YOOKASSA_SECRET = "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk"
+DATABASE_URL = "postgresql://user:password@host:port/dbname"  # замени на свои реальные данные PostgreSQL
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
 app = FastAPI()
 
-conn = sqlite3.connect('worknado.db', check_same_thread=False)
-cur = conn.cursor()
-cur.execute('''CREATE TABLE IF NOT EXISTS users(user_id INTEGER PRIMARY KEY, role TEXT)''')
-cur.execute('''CREATE TABLE IF NOT EXISTS subscriptions(user_id INTEGER PRIMARY KEY, expires TEXT)''')
-cur.execute('''CREATE TABLE IF NOT EXISTS orders(id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER, description TEXT, deadline TEXT, created_at TEXT)''')
+conn = psycopg2.connect(DATABASE_URL, sslmode="require")
+cur = conn.cursor(cursor_factory=RealDictCursor)
+cur.execute("""
+CREATE TABLE IF NOT EXISTS users (
+    user_id BIGINT PRIMARY KEY,
+    role TEXT
+);
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS subscriptions (
+    user_id BIGINT PRIMARY KEY,
+    expires TIMESTAMP
+);
+""")
+cur.execute("""
+CREATE TABLE IF NOT EXISTS orders (
+    id SERIAL PRIMARY KEY,
+    user_id BIGINT,
+    description TEXT,
+    deadline TEXT,
+    created_at TIMESTAMP
+);
+""")
 conn.commit()
 
 main_menu_customer = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="📋 Вакансии")],[KeyboardButton(text="📝 Создать заказ")],[KeyboardButton(text="💳 Купить подписку")]], resize_keyboard=True)
@@ -38,28 +59,24 @@ class OrderStates(StatesGroup):
     deadline = State()
 
 def set_role_db(user_id: int, role: str):
-    cur.execute('INSERT OR REPLACE INTO users(user_id, role) VALUES(?, ?)', (user_id, role))
+    cur.execute("INSERT INTO users (user_id, role) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role;", (user_id, role))
     conn.commit()
 
 def get_role_db(user_id: int):
-    cur.execute('SELECT role FROM users WHERE user_id = ?', (user_id,))
+    cur.execute("SELECT role FROM users WHERE user_id = %s;", (user_id,))
     row = cur.fetchone()
-    return row[0] if row else None
+    return row["role"] if row else None
 
 def set_subscription_db(user_id: int, expires: datetime.datetime):
-    cur.execute('INSERT OR REPLACE INTO subscriptions(user_id, expires) VALUES(?, ?)', (user_id, expires.isoformat()))
+    cur.execute("INSERT INTO subscriptions (user_id, expires) VALUES (%s, %s) ON CONFLICT (user_id) DO UPDATE SET expires = EXCLUDED.expires;", (user_id, expires))
     conn.commit()
 
 def has_active_subscription_db(user_id: int) -> bool:
-    cur.execute('SELECT expires FROM subscriptions WHERE user_id = ?', (user_id,))
+    cur.execute("SELECT expires FROM subscriptions WHERE user_id = %s;", (user_id,))
     row = cur.fetchone()
-    if not row:
+    if not row or not row["expires"]:
         return False
-    try:
-        expires = datetime.datetime.fromisoformat(row[0])
-    except Exception:
-        return False
-    return expires > datetime.datetime.now()
+    return row["expires"] > datetime.datetime.now()
 
 @dp.message(Command("start"))
 async def start(message: Message):
@@ -82,27 +99,25 @@ async def show_vacancies(message: Message):
     if role == "customer" and not has_active_subscription_db(message.from_user.id):
         await message.answer("❌ Для заказчиков доступ только по подписке. Купите подписку за 1000 ₽.", reply_markup=main_menu_customer)
         return
-    cur.execute('SELECT id, description, deadline, created_at, user_id FROM orders ORDER BY id DESC')
+    cur.execute("SELECT id, description, deadline, created_at, user_id FROM orders ORDER BY id DESC;")
     rows = cur.fetchall()
     if not rows:
         await message.answer("❌ Пока нет активных заказов.", reply_markup=back_button)
         return
     for r in rows:
-        oid, desc, deadline, created_at, uid = r
-        short = desc if len(desc) < 200 else desc[:197] + '...'
-        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Подробнее", callback_data=f"order_{oid}")]])
-        await message.answer(f"📌 Заказ #{oid}\n{short}\nСрок: {deadline}\nСоздал: {uid}", reply_markup=kb)
+        short = r["description"] if len(r["description"]) < 200 else r["description"][:197] + '...'
+        kb = InlineKeyboardMarkup(inline_keyboard=[[InlineKeyboardButton(text="Подробнее", callback_data=f"order_{r['id']}")]])
+        await message.answer(f"📌 Заказ #{r['id']}\n{short}\nСрок: {r['deadline']}\nСоздал: {r['user_id']}", reply_markup=kb)
 
 @dp.callback_query(F.data.startswith('order_'))
 async def show_order_cb(query: CallbackQuery):
     oid = int(query.data.split('_', 1)[1])
-    cur.execute('SELECT id, user_id, description, deadline, created_at FROM orders WHERE id = ?', (oid,))
+    cur.execute("SELECT id, user_id, description, deadline, created_at FROM orders WHERE id = %s;", (oid,))
     row = cur.fetchone()
     if not row:
         await query.answer('Заказ не найден', show_alert=True)
         return
-    idd, uid, desc, deadline, created_at = row
-    await query.message.answer(f"📄 Заказ #{idd}\n{desc}\n\nСрок: {deadline}\nСоздан: {created_at}\nЗаказчик: {uid}")
+    await query.message.answer(f"📄 Заказ #{row['id']}\n{row['description']}\n\nСрок: {row['deadline']}\nСоздан: {row['created_at']}\nЗаказчик: {row['user_id']}")
     await query.answer()
 
 @dp.message(F.text == "📝 Создать заказ")
@@ -136,8 +151,8 @@ async def order_deadline(message: Message, state: FSMContext):
     data = await state.get_data()
     desc = data.get('description')
     deadline = message.text
-    created_at = datetime.datetime.now().isoformat(sep=' ', timespec='seconds')
-    cur.execute('INSERT INTO orders(user_id, description, deadline, created_at) VALUES(?, ?, ?, ?)', (message.from_user.id, desc, deadline, created_at))
+    created_at = datetime.datetime.now()
+    cur.execute("INSERT INTO orders (user_id, description, deadline, created_at) VALUES (%s, %s, %s, %s);", (message.from_user.id, desc, deadline, created_at))
     conn.commit()
     await state.clear()
     await message.answer('✅ Заказ создан и добавлен в список вакансий.', reply_markup=main_menu_customer)
@@ -215,3 +230,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
