@@ -14,11 +14,10 @@ from aiogram.fsm.state import StatesGroup, State
 from fastapi import FastAPI, Request
 import uvicorn
 
-# ---- Твои реальные токены и ключи ----
 API_TOKEN = "8394026180:AAEHHKn30U7H_zdHWGu_cB2h9054lmo1eag"
 YOOKASSA_SHOP_ID = "1179735"
 YOOKASSA_SECRET = "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk"
-DATABASE_URL = "postgresql://user:password@host:port/dbname"  # замени на свои реальные данные PostgreSQL
+DATABASE_URL = "postgresql://worknado_user:0NvvjFmjHWOXny9UdRLUjKYyKTzV5jD0@dpg-d3sgt77gi27c73b798rg-a.oregon-postgres.render.com/worknado_db"  
 
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
