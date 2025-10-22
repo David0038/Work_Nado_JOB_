@@ -19,6 +19,7 @@ YOOKASSA_SHOP_ID = "1179735"
 YOOKASSA_SECRET = "test_J8y43wGt8go7fyMtkNNWUGlMdTmVtV41bd82cVmMpQk"
 DATABASE_URL = "postgresql://worknado_user:0NvvjFmjHWOXny9UdRLUjKYyKTzV5jD0@dpg-d3sgt77gi27c73b798rg-a.oregon-postgres.render.com/worknado_db"  
 
+# Re-deploy trigger
 bot = Bot(token=API_TOKEN)
 storage = MemoryStorage()
 dp = Dispatcher(storage=storage)
