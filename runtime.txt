@@ -1,1 +1,5 @@
-python-3.12.3
+python-3.12.18
+git add runtime.txt
+git commit -m "Specify Python 3.12 for Render"
+git push origin main
+
