@@ -16,7 +16,6 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from fastapi import FastAPI, Request
 import uvicorn
 
-
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
@@ -125,14 +124,26 @@ def create_payment(uid):
         "description": "Подписка на вакансии",
         "metadata": {"user_id": uid}
     }
-    r = requests.post(
-        "https://api.yookassa.ru/v3/payments",
-        json=data,
-        auth=(SHOP_ID, SECRET),
-        headers={"Idempotence-Key": pid}
-    ).json()
-    cur.execute("INSERT INTO payments VALUES (%s,%s)", (r["id"], uid))
-    return r["confirmation"]["confirmation_url"]
+    try:
+        r = requests.post(
+            "https://api.yookassa.ru/v3/payments",
+            json=data,
+            auth=(SHOP_ID, SECRET),
+            headers={"Idempotence-Key": pid},
+            timeout=10
+        )
+        if r.status_code not in [200, 201]:
+            raise Exception(f"YooKassa API вернул {r.status_code}: {r.text}")
+
+        r_json = r.json()
+        if "confirmation" not in r_json or "confirmation_url" not in r_json["confirmation"]:
+            raise Exception(f"Неверный ответ ЮKassa: {r_json}")
+
+        cur.execute("INSERT INTO payments VALUES (%s,%s)", (r_json["id"], uid))
+        return r_json["confirmation"]["confirmation_url"]
+
+    except Exception as e:
+        raise Exception(f"Ошибка при создании платежа: {e}")
 
 @dp.message(Command("start"))
 async def start(m: Message):
@@ -155,8 +166,11 @@ async def cust(m: Message):
 
 @dp.message(F.text == "💳 Купить подписку")
 async def pay(m: Message):
-    url = create_payment(m.from_user.id)
-    await m.answer(f"Оплатите подписку:\n{url}")
+    try:
+        url = create_payment(m.from_user.id)
+        await m.answer(f"Оплатите подписку:\n{url}")
+    except Exception as e:
+        await m.answer(str(e))
 
 @dp.message(F.text == "📝 Создать вакансию")
 async def create(m: Message, s: FSMContext):
@@ -249,7 +263,7 @@ async def show(m: Message, s: FSMContext):
 @app.post("/yookassa")
 async def webhook(r: Request):
     data = await r.json()
-    if data["event"] == "payment.succeeded":
+    if data.get("event") == "payment.succeeded":
         uid = int(data["object"]["metadata"]["user_id"])
         activate_sub(uid)
     return {"ok": True}
