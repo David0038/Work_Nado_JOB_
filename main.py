@@ -3,7 +3,7 @@ import asyncio
 import datetime
 import uuid
 import requests
-import psycopg2
+import psycopg
 
 from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, F
