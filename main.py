@@ -1,8 +1,6 @@
 import os
 import asyncio
 import datetime
-import uuid
-import requests
 import psycopg
 from psycopg.rows import dict_row
 
@@ -16,27 +14,27 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
+
 from fastapi import FastAPI
 import uvicorn
 
+# ====== Настройки ======
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-YOOKASSA_SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
-YOOKASSA_SECRET = os.getenv("YOOKASSA_SECRET")
 DATABASE_URL = os.getenv("DATABASE_URL")
 PORT = int(os.getenv("PORT", 8000))
 
 if not BOT_TOKEN or not DATABASE_URL:
-    raise RuntimeError("Environment variables are not set")
+    raise RuntimeError("Environment variables BOT_TOKEN и DATABASE_URL должны быть установлены")
 
+# ====== Инициализация ======
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 
-# Подключение через psycopg v3 с dict_row для удобного получения словарей
 conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True)
-
 cur = conn.cursor()
 
+# ====== Таблицы ======
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
@@ -59,6 +57,7 @@ CREATE TABLE IF NOT EXISTS orders (
 );
 """)
 
+# ====== Клавиатуры ======
 main_menu_customer = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📋 Вакансии")],
@@ -78,10 +77,12 @@ back_button = ReplyKeyboardMarkup(
     resize_keyboard=True
 )
 
+# ====== FSM ======
 class OrderStates(StatesGroup):
     description = State()
     deadline = State()
 
+# ====== Функции работы с БД ======
 def set_role(user_id: int, role: str):
     cur.execute(
         "INSERT INTO users (user_id, role) VALUES (%s, %s) "
@@ -106,6 +107,7 @@ def has_subscription(user_id: int):
     row = cur.fetchone()
     return bool(row and row["expires"] > datetime.datetime.now())
 
+# ====== Хэндлеры бота ======
 @dp.message(Command("start"))
 async def start(message: Message):
     kb = ReplyKeyboardMarkup(
@@ -140,9 +142,7 @@ async def show_orders(message: Message):
         return
     for o in orders:
         kb = InlineKeyboardMarkup(
-            inline_keyboard=[
-                [InlineKeyboardButton(text="Подробнее", callback_data=f"order_{o['id']}")]
-            ]
+            inline_keyboard=[[InlineKeyboardButton(text="Подробнее", callback_data=f"order_{o['id']}")]]
         )
         await message.answer(
             f"Заказ #{o['id']}\n{o['description']}\nСрок: {o['deadline']}",
@@ -185,15 +185,18 @@ async def order_dead(message: Message, state: FSMContext):
     await state.clear()
     await message.answer("Заказ создан", reply_markup=main_menu_customer)
 
+# ====== FastAPI ======
 @app.get("/")
 async def health():
     return {"status": "ok"}
 
-async def main():
-    asyncio.create_task(dp.start_polling(bot))
-    config = uvicorn.Config(app, host="0.0.0.0", port=PORT)
-    server = uvicorn.Server(config)
-    await server.serve()
+# ====== Запуск бота и API ======
+async def start_bot():
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Создаем event loop и запускаем бота как задачу
+    loop = asyncio.get_event_loop()
+    loop.create_task(start_bot())
+    # uvicorn для FastAPI
+    uvicorn.run(app, host="0.0.0.0", port=PORT)
