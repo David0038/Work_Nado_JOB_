@@ -4,8 +4,8 @@ import datetime
 import uuid
 import requests
 import psycopg
+from psycopg.rows import dict_row
 
-from psycopg2.extras import RealDictCursor
 from aiogram import Bot, Dispatcher, F
 from aiogram.types import (
     ReplyKeyboardMarkup, KeyboardButton,
@@ -32,8 +32,10 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
 
-conn = psycopg2.connect(DATABASE_URL, sslmode="require")
-cur = conn.cursor(cursor_factory=RealDictCursor)
+# Подключение через psycopg v3 с dict_row для удобного получения словарей
+conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True)
+
+cur = conn.cursor()
 
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
@@ -56,7 +58,6 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TIMESTAMP
 );
 """)
-conn.commit()
 
 main_menu_customer = ReplyKeyboardMarkup(
     keyboard=[
@@ -87,7 +88,6 @@ def set_role(user_id: int, role: str):
         "ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role;",
         (user_id, role)
     )
-    conn.commit()
 
 def get_role(user_id: int):
     cur.execute("SELECT role FROM users WHERE user_id=%s;", (user_id,))
@@ -100,7 +100,6 @@ def set_subscription(user_id: int, expires: datetime.datetime):
         "ON CONFLICT (user_id) DO UPDATE SET expires = EXCLUDED.expires;",
         (user_id, expires)
     )
-    conn.commit()
 
 def has_subscription(user_id: int):
     cur.execute("SELECT expires FROM subscriptions WHERE user_id=%s;", (user_id,))
@@ -183,7 +182,6 @@ async def order_dead(message: Message, state: FSMContext):
         "VALUES (%s, %s, %s, %s);",
         (message.from_user.id, data["description"], message.text, datetime.datetime.now())
     )
-    conn.commit()
     await state.clear()
     await message.answer("Заказ создан", reply_markup=main_menu_customer)
 
