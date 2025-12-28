@@ -1,29 +1,28 @@
 import os
+import uuid
 import asyncio
 import datetime
 import psycopg
 from psycopg.rows import dict_row
+import requests
 
 from aiogram import Bot, Dispatcher, F
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton,
-    Message, CallbackQuery
-)
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import StatesGroup, State
 from aiogram.fsm.storage.memory import MemoryStorage
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 import uvicorn
+
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
+SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
+SECRET = os.getenv("YOOKASSA_SECRET")
+BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 8000))
-
-if not BOT_TOKEN or not DATABASE_URL:
-    raise RuntimeError("BOT_TOKEN и DATABASE_URL должны быть установлены")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -50,54 +49,93 @@ cur.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
     user_id BIGINT,
+    name TEXT,
+    phone TEXT,
+    city TEXT,
+    salary TEXT,
+    schedule TEXT,
     description TEXT,
-    deadline TEXT,
+    photo_id TEXT,
     created_at TIMESTAMP
 );
 """)
 
-main_menu_customer = ReplyKeyboardMarkup(
+cur.execute("""
+CREATE TABLE IF NOT EXISTS payments (
+    payment_id TEXT PRIMARY KEY,
+    user_id BIGINT
+);
+""")
+
+customer_free = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="💳 Купить подписку")]],
+    resize_keyboard=True
+)
+
+customer_paid = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📋 Вакансии")],
-        [KeyboardButton(text="📝 Создать заказ")],
-        [KeyboardButton(text="💳 Купить подписку")]
+        [KeyboardButton(text="📝 Создать вакансию")],
+        [KeyboardButton(text="📋 Мои вакансии")]
     ],
     resize_keyboard=True
 )
 
-main_menu_worker = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="📋 Вакансии")]],
+worker_menu = ReplyKeyboardMarkup(
+    keyboard=[[KeyboardButton(text="🔍 Вакансии по городу")]],
     resize_keyboard=True
 )
 
-back_button = ReplyKeyboardMarkup(
-    keyboard=[[KeyboardButton(text="⬅️ Назад")]],
-    resize_keyboard=True
-)
-
-class OrderStates(StatesGroup):
+class OrderFSM(StatesGroup):
+    photo = State()
+    name = State()
+    phone = State()
+    city = State()
+    salary = State()
+    schedule = State()
     description = State()
-    deadline = State()
 
-def set_role(user_id: int, role: str):
+class SearchFSM(StatesGroup):
+    city = State()
+
+def set_role(uid, role):
     cur.execute(
-        "INSERT INTO users (user_id, role) VALUES (%s, %s) "
-        "ON CONFLICT (user_id) DO UPDATE SET role = EXCLUDED.role;",
-        (user_id, role)
+        "INSERT INTO users (user_id, role) VALUES (%s,%s) "
+        "ON CONFLICT (user_id) DO UPDATE SET role=EXCLUDED.role",
+        (uid, role)
     )
 
-def get_role(user_id: int):
-    cur.execute("SELECT role FROM users WHERE user_id=%s;", (user_id,))
-    row = cur.fetchone()
-    return row["role"] if row else None
+def has_sub(uid):
+    cur.execute("SELECT expires FROM subscriptions WHERE user_id=%s", (uid,))
+    r = cur.fetchone()
+    return r and r["expires"] > datetime.datetime.now()
 
-def has_subscription(user_id: int):
-    cur.execute("SELECT expires FROM subscriptions WHERE user_id=%s;", (user_id,))
-    row = cur.fetchone()
-    return bool(row and row["expires"] > datetime.datetime.now())
+def activate_sub(uid):
+    cur.execute(
+        "INSERT INTO subscriptions (user_id, expires) VALUES (%s,%s) "
+        "ON CONFLICT (user_id) DO UPDATE SET expires=EXCLUDED.expires",
+        (uid, datetime.datetime.now() + datetime.timedelta(days=30))
+    )
+
+def create_payment(uid):
+    pid = str(uuid.uuid4())
+    data = {
+        "amount": {"value": "499.00", "currency": "RUB"},
+        "confirmation": {"type": "redirect", "return_url": f"{BASE_URL}/success"},
+        "capture": True,
+        "description": "Подписка на вакансии",
+        "metadata": {"user_id": uid}
+    }
+    r = requests.post(
+        "https://api.yookassa.ru/v3/payments",
+        json=data,
+        auth=(SHOP_ID, SECRET),
+        headers={"Idempotence-Key": pid}
+    ).json()
+    cur.execute("INSERT INTO payments VALUES (%s,%s)", (r["id"], uid))
+    return r["confirmation"]["confirmation_url"]
 
 @dp.message(Command("start"))
-async def start_cmd(message: Message):
+async def start(m: Message):
     kb = ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="👔 Я заказчик")],
@@ -105,17 +143,116 @@ async def start_cmd(message: Message):
         ],
         resize_keyboard=True
     )
-    await message.answer("Добро пожаловать", reply_markup=kb)
+    await m.answer("Выберите роль", reply_markup=kb)
 
 @dp.message(F.text == "👔 Я заказчик")
-async def choose_customer(message: Message):
-    set_role(message.from_user.id, "customer")
-    await message.answer("Роль: заказчик", reply_markup=main_menu_customer)
+async def cust(m: Message):
+    set_role(m.from_user.id, "customer")
+    if has_sub(m.from_user.id):
+        await m.answer("Кабинет заказчика", reply_markup=customer_paid)
+    else:
+        await m.answer("Для размещения вакансий нужна подписка", reply_markup=customer_free)
+
+@dp.message(F.text == "💳 Купить подписку")
+async def pay(m: Message):
+    url = create_payment(m.from_user.id)
+    await m.answer(f"Оплатите подписку:\n{url}")
+
+@dp.message(F.text == "📝 Создать вакансию")
+async def create(m: Message, s: FSMContext):
+    if not has_sub(m.from_user.id):
+        return
+    await s.set_state(OrderFSM.photo)
+    await m.answer("Отправьте фото")
+
+@dp.message(OrderFSM.photo)
+async def o1(m: Message, s: FSMContext):
+    await s.update_data(photo=m.photo[-1].file_id)
+    await s.set_state(OrderFSM.name)
+    await m.answer("Имя и фамилия")
+
+@dp.message(OrderFSM.name)
+async def o2(m: Message, s: FSMContext):
+    await s.update_data(name=m.text)
+    await s.set_state(OrderFSM.phone)
+    await m.answer("Телефон")
+
+@dp.message(OrderFSM.phone)
+async def o3(m: Message, s: FSMContext):
+    await s.update_data(phone=m.text)
+    await s.set_state(OrderFSM.city)
+    await m.answer("Город")
+
+@dp.message(OrderFSM.city)
+async def o4(m: Message, s: FSMContext):
+    await s.update_data(city=m.text)
+    await s.set_state(OrderFSM.salary)
+    await m.answer("Зарплата")
+
+@dp.message(OrderFSM.salary)
+async def o5(m: Message, s: FSMContext):
+    await s.update_data(salary=m.text)
+    await s.set_state(OrderFSM.schedule)
+    await m.answer("График")
+
+@dp.message(OrderFSM.schedule)
+async def o6(m: Message, s: FSMContext):
+    await s.update_data(schedule=m.text)
+    await s.set_state(OrderFSM.description)
+    await m.answer("Описание")
+
+@dp.message(OrderFSM.description)
+async def o7(m: Message, s: FSMContext):
+    d = await s.get_data()
+    cur.execute(
+        """
+        INSERT INTO orders (user_id,name,phone,city,salary,schedule,description,photo_id,created_at)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        """,
+        (
+            m.from_user.id,
+            d["name"],
+            d["phone"],
+            d["city"],
+            d["salary"],
+            d["schedule"],
+            m.text,
+            d["photo"],
+            datetime.datetime.now()
+        )
+    )
+    await s.clear()
+    await m.answer("Вакансия опубликована", reply_markup=customer_paid)
 
 @dp.message(F.text == "👤 Я исполнитель")
-async def choose_worker(message: Message):
-    set_role(message.from_user.id, "worker")
-    await message.answer("Роль: исполнитель", reply_markup=main_menu_worker)
+async def worker(m: Message):
+    set_role(m.from_user.id, "worker")
+    await m.answer("Кабинет исполнителя", reply_markup=worker_menu)
+
+@dp.message(F.text == "🔍 Вакансии по городу")
+async def search(m: Message, s: FSMContext):
+    await s.set_state(SearchFSM.city)
+    await m.answer("Введите город")
+
+@dp.message(SearchFSM.city)
+async def show(m: Message, s: FSMContext):
+    cur.execute("SELECT * FROM orders WHERE city ILIKE %s", (f"%{m.text}%",))
+    rows = cur.fetchall()
+    for o in rows:
+        await bot.send_photo(
+            m.chat.id,
+            o["photo_id"],
+            caption=f"{o['city']}\n{o['salary']}\n{o['schedule']}\n{o['description']}\n{o['name']}\n{o['phone']}"
+        )
+    await s.clear()
+
+@app.post("/yookassa")
+async def webhook(r: Request):
+    data = await r.json()
+    if data["event"] == "payment.succeeded":
+        uid = int(data["object"]["metadata"]["user_id"])
+        activate_sub(uid)
+    return {"ok": True}
 
 @app.get("/")
 async def health():
