@@ -1,4 +1,16 @@
 import os
+
+# ====== Безопасная проверка переменных окружения ======
+env_vars = ["BOT_TOKEN", "DATABASE_URL", "YOOKASSA_SHOP_ID", "YOOKASSA_SECRET"]
+
+for var in env_vars:
+    value = os.getenv(var)
+    if value:
+        # Выводим только первые 4 символа и длину строки для безопасности
+        print(f"{var}: set (first 4 chars: {value[:4]}..., length: {len(value)})")
+    else:
+        print(f"{var}: NOT SET")
+
 import asyncio
 import datetime
 import psycopg
