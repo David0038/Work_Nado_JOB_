@@ -1,4 +1,3 @@
-print("=== BOT VERSION CHECK 001 ===")
 import os
 import uuid
 import asyncio
@@ -17,13 +16,18 @@ from aiogram.fsm.storage.memory import MemoryStorage
 from fastapi import FastAPI, Request
 import uvicorn
 
+# ====== Переменные окружения ======
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
 SECRET = os.getenv("YOOKASSA_SECRET")
-BASE_URL = os.getenv("BASE_URL")
+BASE_URL = os.getenv("BASE_URL") or "https://work-nado-job-vrdm.onrender.com"
 PORT = int(os.getenv("PORT", 8000))
 
+if not SHOP_ID or not SECRET:
+    raise Exception("YOOKASSA_SHOP_ID или YOOKASSA_SECRET не заданы!")
+
+# ====== Настройка бота и базы ======
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 app = FastAPI()
@@ -31,20 +35,19 @@ app = FastAPI()
 conn = psycopg.connect(DATABASE_URL, row_factory=dict_row, autocommit=True)
 cur = conn.cursor()
 
+# ====== Создание таблиц ======
 cur.execute("""
 CREATE TABLE IF NOT EXISTS users (
     user_id BIGINT PRIMARY KEY,
     role TEXT
 );
 """)
-
 cur.execute("""
 CREATE TABLE IF NOT EXISTS subscriptions (
     user_id BIGINT PRIMARY KEY,
     expires TIMESTAMP
 );
 """)
-
 cur.execute("""
 CREATE TABLE IF NOT EXISTS orders (
     id SERIAL PRIMARY KEY,
@@ -59,7 +62,6 @@ CREATE TABLE IF NOT EXISTS orders (
     created_at TIMESTAMP
 );
 """)
-
 cur.execute("""
 CREATE TABLE IF NOT EXISTS payments (
     payment_id TEXT PRIMARY KEY,
@@ -67,11 +69,11 @@ CREATE TABLE IF NOT EXISTS payments (
 );
 """)
 
+# ====== Клавиатуры ======
 customer_free = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="💳 Купить подписку")]],
     resize_keyboard=True
 )
-
 customer_paid = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📝 Создать вакансию")],
@@ -79,12 +81,12 @@ customer_paid = ReplyKeyboardMarkup(
     ],
     resize_keyboard=True
 )
-
 worker_menu = ReplyKeyboardMarkup(
     keyboard=[[KeyboardButton(text="🔍 Вакансии по городу")]],
     resize_keyboard=True
 )
 
+# ====== FSM ======
 class OrderFSM(StatesGroup):
     photo = State()
     name = State()
@@ -97,6 +99,7 @@ class OrderFSM(StatesGroup):
 class SearchFSM(StatesGroup):
     city = State()
 
+# ====== Вспомогательные функции ======
 def set_role(uid, role):
     cur.execute(
         "INSERT INTO users (user_id, role) VALUES (%s,%s) "
@@ -116,6 +119,7 @@ def activate_sub(uid):
         (uid, datetime.datetime.now() + datetime.timedelta(days=30))
     )
 
+# ====== YooKassa платеж ======
 def create_payment(uid):
     pid = str(uuid.uuid4())
     data = {
@@ -126,6 +130,7 @@ def create_payment(uid):
         "metadata": {"user_id": uid}
     }
     try:
+        # Отправка запроса в YooKassa
         r = requests.post(
             "https://api.yookassa.ru/v3/payments",
             json=data,
@@ -133,19 +138,22 @@ def create_payment(uid):
             headers={"Idempotence-Key": pid},
             timeout=10
         )
+
         if r.status_code not in [200, 201]:
             raise Exception(f"YooKassa API вернул {r.status_code}: {r.text}")
 
         r_json = r.json()
         if "confirmation" not in r_json or "confirmation_url" not in r_json["confirmation"]:
-            raise Exception(f"Неверный ответ ЮKassa: {r_json}")
+            raise Exception(f"Неверный ответ YooKassa: {r_json}")
 
+        # Сохраняем платеж в БД
         cur.execute("INSERT INTO payments VALUES (%s,%s)", (r_json["id"], uid))
         return r_json["confirmation"]["confirmation_url"]
 
     except Exception as e:
         raise Exception(f"Ошибка при создании платежа: {e}")
 
+# ====== Хендлеры бота ======
 @dp.message(Command("start"))
 async def start(m: Message):
     kb = ReplyKeyboardMarkup(
@@ -261,6 +269,7 @@ async def show(m: Message, s: FSMContext):
         )
     await s.clear()
 
+# ====== Вебхук YooKassa ======
 @app.post("/yookassa")
 async def webhook(r: Request):
     data = await r.json()
@@ -273,6 +282,7 @@ async def webhook(r: Request):
 async def health():
     return {"status": "ok"}
 
+# ====== Запуск бота и FastAPI ======
 async def main():
     await asyncio.gather(
         dp.start_polling(bot),
