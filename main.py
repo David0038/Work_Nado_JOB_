@@ -1,3 +1,5 @@
+def create_payment(uid):
+    raise Exception(f"ENV CHECK → SHOP_ID={SHOP_ID}, SECRET={SECRET[:10]}")
 import os
 import uuid
 import asyncio
