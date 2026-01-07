@@ -20,11 +20,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 SHOP_ID = os.getenv("YOOKASSA_SHOP_ID")
 SECRET = os.getenv("YOOKASSA_SECRET")
-BASE_URL = os.getenv("BASE_URL") or "https://work-nado-job-vrdm.onrender.com"
+BASE_URL = os.getenv("BASE_URL")
 PORT = int(os.getenv("PORT", 8000))
-
-if not SHOP_ID or not SECRET:
-    raise Exception("YOOKASSA_SHOP_ID или YOOKASSA_SECRET не заданы!")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
@@ -107,21 +104,14 @@ def set_role(uid, role):
     )
 
 def has_sub(uid):
-    cur.execute(
-        "SELECT expires FROM subscriptions WHERE user_id=%s",
-        (uid,)
-    )
-    row = cur.fetchone()
-    return row and row["expires"] > datetime.datetime.now()
+    cur.execute("SELECT expires FROM subscriptions WHERE user_id=%s", (uid,))
+    r = cur.fetchone()
+    return r and r["expires"] > datetime.datetime.now()
 
 def activate_sub(uid):
     cur.execute(
-        """
-        INSERT INTO subscriptions (user_id, expires)
-        VALUES (%s,%s)
-        ON CONFLICT (user_id)
-        DO UPDATE SET expires = EXCLUDED.expires
-        """,
+        "INSERT INTO subscriptions (user_id, expires) VALUES (%s,%s) "
+        "ON CONFLICT (user_id) DO UPDATE SET expires=EXCLUDED.expires",
         (uid, datetime.datetime.now() + datetime.timedelta(days=30))
     )
 
@@ -129,90 +119,63 @@ def create_payment(uid):
     pid = str(uuid.uuid4())
     data = {
         "amount": {"value": "499.00", "currency": "RUB"},
-        "confirmation": {
-            "type": "redirect",
-            "return_url": f"{BASE_URL}/success"
-        },
+        "confirmation": {"type": "redirect", "return_url": f"{BASE_URL}/success"},
         "capture": True,
         "description": "Подписка на вакансии",
         "metadata": {"user_id": uid}
     }
+    try:
+        r = requests.post(
+            "https://api.yookassa.ru/v3/payments",
+            json=data,
+            auth=(SHOP_ID, SECRET),
+            headers={"Idempotence-Key": pid},
+            timeout=10
+        )
+        if r.status_code not in [200, 201]:
+            raise Exception(f"YooKassa API вернул {r.status_code}: {r.text}")
 
-    r = requests.post(
-        "https://api.yookassa.ru/v3/payments",
-        json=data,
-        auth=(SHOP_ID, SECRET),
-        headers={"Idempotence-Key": pid},
-        timeout=10
-    )
+        r_json = r.json()
+        if "confirmation" not in r_json or "confirmation_url" not in r_json["confirmation"]:
+            raise Exception(f"Неверный ответ ЮKassa: {r_json}")
 
-    r.raise_for_status()
-    rj = r.json()
+        cur.execute("INSERT INTO payments VALUES (%s,%s)", (r_json["id"], uid))
+        return r_json["confirmation"]["confirmation_url"]
 
-    cur.execute(
-        "INSERT INTO payments VALUES (%s,%s)",
-        (rj["id"], uid)
-    )
-
-    return rj["confirmation"]["confirmation_url"]
+    except Exception as e:
+        raise Exception(f"Ошибка при создании платежа: {e}")
 
 @dp.message(Command("start"))
 async def start(m: Message):
-    cur.execute(
-        "SELECT role FROM users WHERE user_id=%s",
-        (m.from_user.id,)
+    kb = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="👔 Я заказчик")],
+            [KeyboardButton(text="👤 Я исполнитель")]
+        ],
+        resize_keyboard=True
     )
-    row = cur.fetchone()
-
-    if not row:
-        kb = ReplyKeyboardMarkup(
-            keyboard=[
-                [KeyboardButton(text="👔 Я заказчик")],
-                [KeyboardButton(text="👤 Я исполнитель")]
-            ],
-            resize_keyboard=True
-        )
-        await m.answer("Выберите роль", reply_markup=kb)
-        return
-
-    if row["role"] == "customer":
-        if has_sub(m.from_user.id):
-            await m.answer("Кабинет заказчика", reply_markup=customer_paid)
-        else:
-            await m.answer(
-                "Для размещения вакансий нужна подписка",
-                reply_markup=customer_free
-            )
-
-    if row["role"] == "worker":
-        await m.answer("Кабинет исполнителя", reply_markup=worker_menu)
+    await m.answer("Выберите роль", reply_markup=kb)
 
 @dp.message(F.text == "👔 Я заказчик")
 async def cust(m: Message):
     set_role(m.from_user.id, "customer")
-    await start(m)
+    if has_sub(m.from_user.id):
+        await m.answer("Кабинет заказчика", reply_markup=customer_paid)
+    else:
+        await m.answer("Для размещения вакансий нужна подписка", reply_markup=customer_free)
 
 @dp.message(F.text == "💳 Купить подписку")
 async def pay(m: Message):
-    if has_sub(m.from_user.id):
-        await m.answer(
-            "✅ У вас уже есть активная подписка",
-            reply_markup=customer_paid
-        )
-        return
-
-    url = create_payment(m.from_user.id)
-    await m.answer(f"Оплатите подписку:\n{url}")
+    try:
+        url = create_payment(m.from_user.id)
+        await m.answer(f"Оплатите подписку:\n{url}")
+    except Exception as e:
+        await m.answer(str(e))
 
 @dp.message(F.text == "📝 Создать вакансию")
 async def create(m: Message, s: FSMContext):
     if not has_sub(m.from_user.id):
-        await m.answer(
-            "❌ У вас нет активной подписки",
-            reply_markup=customer_free
-        )
         return
-
     await s.set_state(OrderFSM.photo)
     await m.answer("Отправьте фото")
 
@@ -257,8 +220,7 @@ async def o7(m: Message, s: FSMContext):
     d = await s.get_data()
     cur.execute(
         """
-        INSERT INTO orders
-        (user_id,name,phone,city,salary,schedule,description,photo_id,created_at)
+        INSERT INTO orders (user_id,name,phone,city,salary,schedule,description,photo_id,created_at)
         VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)
         """,
         (
@@ -288,11 +250,9 @@ async def search(m: Message, s: FSMContext):
 
 @dp.message(SearchFSM.city)
 async def show(m: Message, s: FSMContext):
-    cur.execute(
-        "SELECT * FROM orders WHERE city ILIKE %s",
-        (f"%{m.text}%",)
-    )
-    for o in cur.fetchall():
+    cur.execute("SELECT * FROM orders WHERE city ILIKE %s", (f"%{m.text}%",))
+    rows = cur.fetchall()
+    for o in rows:
         await bot.send_photo(
             m.chat.id,
             o["photo_id"],
@@ -301,41 +261,12 @@ async def show(m: Message, s: FSMContext):
     await s.clear()
 
 @app.post("/yookassa")
-async def yookassa_webhook(r: Request):
+async def webhook(r: Request):
     data = await r.json()
-
-    if data.get("event") != "payment.succeeded":
-        return {"ok": True}
-
-    pid = data["object"]["id"]
-
-    cur.execute(
-        "SELECT user_id FROM payments WHERE payment_id=%s",
-        (pid,)
-    )
-    row = cur.fetchone()
-
-    if not row:
-        return {"ok": True}
-
-    activate_sub(row["user_id"])
-
-    cur.execute(
-        "DELETE FROM payments WHERE payment_id=%s",
-        (pid,)
-    )
-
-    await bot.send_message(
-        row["user_id"],
-        "✅ Подписка успешно активирована",
-        reply_markup=customer_paid
-    )
-
+    if data.get("event") == "payment.succeeded":
+        uid = int(data["object"]["metadata"]["user_id"])
+        activate_sub(uid)
     return {"ok": True}
-
-@app.get("/success")
-async def success():
-    return {"status": "ok"}
 
 @app.get("/")
 async def health():
